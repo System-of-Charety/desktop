@@ -1,5 +1,4 @@
 import * as React from 'react'
-import moment from 'moment'
 import classNames from 'classnames'
 import { Octicon } from '../octicons'
 import * as OcticonSymbol from '../octicons/octicons.generated'
@@ -10,6 +9,8 @@ import { GitHubRepository } from '../../models/github-repository'
 import { Dispatcher } from '../dispatcher'
 import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
 import { DropTargetType } from '../../models/drag-drop'
+import { getPullRequestCommitRef } from '../../models/pull-request'
+import { formatRelative } from '../../lib/format-relative'
 
 export interface IPullRequestListItemProps {
   /** The title. */
@@ -75,7 +76,7 @@ export class PullRequestListItem extends React.Component<
       return undefined
     }
 
-    const timeAgo = moment(this.props.created).fromNow()
+    const timeAgo = formatRelative(this.props.created.getTime() - Date.now())
     const subtitle = `#${this.props.number} opened ${timeAgo} by ${this.props.author}`
 
     return this.props.draft ? `${subtitle} • Draft` : subtitle
@@ -155,7 +156,7 @@ export class PullRequestListItem extends React.Component<
   }
 
   private renderPullRequestStatus() {
-    const ref = `refs/pull/${this.props.number}/head`
+    const ref = getPullRequestCommitRef(this.props.number)
     return (
       <div className="ci-status-container">
         <CIStatus

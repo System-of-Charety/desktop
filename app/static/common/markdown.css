@@ -9,6 +9,14 @@ desktop font-size variables. (This is not meant to be an exhaustive list of
 changes from the original, just a note that this will not match 1-1)
  */
 
+#content {
+	/*
+	We need to set overflow-y to hidden to make sure this element calculates the
+	right height to fit its content.
+	 */
+	overflow-y: hidden;
+}
+
 .markdown-body {
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
 	font-size: var(--font-size);
@@ -295,7 +303,9 @@ changes from the original, just a note that this will not match 1-1)
 .markdown-body .emoji {
 	max-width: none;
 	vertical-align: text-top;
-	background-color: transparent
+	background-color: transparent;
+	height: 1em;
+	width: auto;
 }
 
 .markdown-body span.frame {

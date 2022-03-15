@@ -80,6 +80,7 @@ export enum PopupType {
   PullRequestChecksFailed,
   CICheckRunRerun,
   WarnForcePush,
+  DiscardChangesRetry,
 }
 
 export type Popup =
@@ -225,7 +226,7 @@ export type Popup =
   | {
       type: PopupType.PushRejectedDueToMissingWorkflowScope
       rejectedPath: string
-      repository: Repository
+      repository: RepositoryWithGitHubRepository
     }
   | {
       type: PopupType.SAMLReauthRequired
@@ -330,3 +331,7 @@ export type Popup =
       prRef: string
     }
   | { type: PopupType.WarnForcePush; operation: string; onBegin: () => void }
+  | {
+      type: PopupType.DiscardChangesRetry
+      retryAction: RetryAction
+    }

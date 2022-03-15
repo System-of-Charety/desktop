@@ -5,6 +5,8 @@ const ErrorEndpoint = 'https://central.github.com/api/desktop/exception'
 const NonFatalErrorEndpoint =
   'https://central.github.com/api/desktop-non-fatal/exception'
 
+let hasSentFatalError = false
+
 /** Report the error to Central. */
 export async function reportError(
   error: Error,
@@ -13,6 +15,17 @@ export async function reportError(
 ) {
   if (__DEV__) {
     return
+  }
+
+  // We never want to send more than one fatal error (i.e. crash) per
+  // application session. This guards against us ending up in a feedback loop
+  // where the act of reporting a crash triggers another unhandled exception
+  // which causes us to report a crash and so on and so forth.
+  if (nonFatal !== true) {
+    if (hasSentFatalError) {
+      return
+    }
+    hasSentFatalError = true
   }
 
   const data = new Map<string, string>()
@@ -35,14 +48,6 @@ export async function reportError(
     }
   }
 
-  const requestOptions: Electron.RequestOptions = {
-    method: 'POST',
-    url: nonFatal ? NonFatalErrorEndpoint : ErrorEndpoint,
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-  }
-
   const body = [...data.entries()]
     .map(
       ([key, value]) =>
@@ -52,7 +57,10 @@ export async function reportError(
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const request = net.request(requestOptions)
+      const url = nonFatal ? NonFatalErrorEndpoint : ErrorEndpoint
+      const request = net.request({ method: 'POST', url })
+
+      request.setHeader('Content-Type', 'application/x-www-form-urlencoded')
 
       request.on('response', response => {
         if (response.statusCode === 200) {

@@ -1,5 +1,3 @@
-import Deque from 'double-ended-queue'
-
 import {
   FileEntry,
   GitStatusEntry,
@@ -66,22 +64,20 @@ export function parsePorcelainStatus(
   // backslash-escaping is performed.
 
   const tokens = output.split('\0')
-  const queue = new Deque(tokens)
 
-  let field: string | undefined
-
-  while ((field = queue.shift())) {
+  for (let i = 0; i < tokens.length; i++) {
+    const field = tokens[i]
     if (field.startsWith('# ') && field.length > 2) {
-      entries.push({ kind: 'header', value: field.substr(2) })
+      entries.push({ kind: 'header', value: field.substring(2) })
       continue
     }
 
-    const entryKind = field.substr(0, 1)
+    const entryKind = field.substring(0, 1)
 
     if (entryKind === ChangedEntryType) {
       entries.push(parseChangedEntry(field))
     } else if (entryKind === RenamedOrCopiedEntryType) {
-      entries.push(parsedRenamedOrCopiedEntry(field, queue.shift()))
+      entries.push(parsedRenamedOrCopiedEntry(field, tokens[++i]))
     } else if (entryKind === UnmergedEntryType) {
       entries.push(parseUnmergedEntry(field))
     } else if (entryKind === UntrackedEntryType) {
@@ -105,11 +101,7 @@ function parseChangedEntry(field: string): IStatusEntry {
     throw new Error(`Failed to parse status line for changed entry`)
   }
 
-  return {
-    kind: 'entry',
-    statusCode: match[1],
-    path: match[8],
-  }
+  return { kind: 'entry', statusCode: match[1], path: match[8] }
 }
 
 // 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path><sep><origPath>
@@ -132,12 +124,7 @@ function parsedRenamedOrCopiedEntry(
     )
   }
 
-  return {
-    kind: 'entry',
-    statusCode: match[1],
-    oldPath,
-    path: match[9],
-  }
+  return { kind: 'entry', statusCode: match[1], oldPath, path: match[9] }
 }
 
 // u <xy> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
@@ -159,7 +146,7 @@ function parseUnmergedEntry(field: string): IStatusEntry {
 }
 
 function parseUntrackedEntry(field: string): IStatusEntry {
-  const path = field.substr(2)
+  const path = field.substring(2)
   return {
     kind: 'entry',
     // NOTE: We return ?? instead of ? here to play nice with mapStatus,
@@ -174,9 +161,7 @@ function parseUntrackedEntry(field: string): IStatusEntry {
  */
 export function mapStatus(status: string): FileEntry {
   if (status === '??') {
-    return {
-      kind: 'untracked',
-    }
+    return { kind: 'untracked' }
   }
 
   if (status === '.M') {

@@ -15,6 +15,7 @@ import username from 'username'
 import { GitProtocol } from './remote-parsing'
 import { Emitter } from 'event-kit'
 import JSZip from 'jszip'
+import { updateEndpointVersion } from './endpoint-capabilities'
 
 const envEndpoint = process.env['DESKTOP_GITHUB_DOTCOM_API_ENDPOINT']
 const envHTMLURL = process.env['DESKTOP_GITHUB_DOTCOM_HTML_URL']
@@ -80,14 +81,8 @@ if (!ClientID || !ClientID.length || !ClientSecret || !ClientSecret.length) {
 
 type GitHubAccountType = 'User' | 'Organization'
 
-/** The OAuth scopes we want to request from GitHub.com. */
-const DotComOAuthScopes = ['repo', 'user', 'workflow']
-
-/**
- * The OAuth scopes we want to request from GitHub
- * Enterprise.
- */
-const EnterpriseOAuthScopes = ['repo', 'user']
+/** The OAuth scopes we want to request */
+const oauthScopes = ['repo', 'user', 'workflow']
 
 enum HttpStatusCode {
   NotModified = 304,
@@ -646,6 +641,15 @@ function toGitHubIsoDateString(date: Date) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z')
 }
 
+interface IAPIAliveSignedChannel {
+  readonly channel_name: string
+  readonly signed_channel: string
+}
+
+interface IAPIAliveWebSocket {
+  readonly url: string
+}
+
 /**
  * An object for making authenticated requests to the GitHub API
  */
@@ -674,6 +678,44 @@ export class API {
   public constructor(endpoint: string, token: string) {
     this.endpoint = endpoint
     this.token = token
+  }
+
+  /**
+   * Retrieves the name of the Alive channel used by Desktop to receive
+   * high-signal notifications.
+   */
+  public async getAliveDesktopChannel(): Promise<IAPIAliveSignedChannel | null> {
+    try {
+      const res = await this.request('GET', '/desktop_internal/alive-channel')
+      const signedChannel = await parsedResponse<IAPIAliveSignedChannel>(res)
+      return signedChannel
+    } catch (e) {
+      log.warn(`Alive channel request failed: ${e}`)
+      return null
+    }
+  }
+
+  /**
+   * Retrieves the URL for the Alive websocket.
+   *
+   * @returns The websocket URL if the request succeeded, null if the request
+   * failed with 404, otherwise it will throw an error.
+   *
+   * This behavior is expected by the AliveSession class constructor, to prevent
+   * it from hitting the endpoint many times if it's disabled.
+   */
+  public async getAliveWebSocketURL(): Promise<string | null> {
+    try {
+      const res = await this.request('GET', '/alive_internal/websocket-url')
+      if (res.status === HttpStatusCode.NotFound) {
+        return null
+      }
+      const websocket = await parsedResponse<IAPIAliveWebSocket>(res)
+      return websocket.url
+    } catch (e) {
+      log.warn(`Alive web socket request failed: ${e}`)
+      throw e
+    }
   }
 
   /** Fetch a repo by its owner and name. */
@@ -1024,7 +1066,7 @@ export class API {
    * List workflow runs for a repository filtered by branch and event type of
    * pull_request
    */
-  public async fetchPRWorkflowRuns(
+  public async fetchPRWorkflowRunsByBranchName(
     owner: string,
     name: string,
     branchName: string
@@ -1041,6 +1083,43 @@ export class API {
     } catch (err) {
       log.debug(
         `Failed fetching workflow runs for ${branchName} (${owner}/${name})`
+      )
+    }
+    return null
+  }
+
+  /**
+   * Return the workflow run for a given check_suite_id.
+   *
+   * A check suite is a reference for a set check runs.
+   * A workflow run is a reference for set a of workflows for the GitHub Actions
+   * check runner.
+   *
+   * If a check suite is comprised of check runs ran by actions, there will be
+   * one workflow run that represents that check suite. Thus, if this api should
+   * either return an empty array indicating there are no actions runs for that
+   * check_suite_id (so check suite was not ran by actions) or an array with a
+   * single element.
+   */
+  public async fetchPRActionWorkflowRunByCheckSuiteId(
+    owner: string,
+    name: string,
+    checkSuiteId: number
+  ): Promise<IAPIWorkflowRun | null> {
+    const path = `repos/${owner}/${name}/actions/runs?event=pull_request&check_suite_id=${checkSuiteId}`
+    const customHeaders = {
+      Accept: 'application/vnd.github.antiope-preview+json',
+    }
+    const response = await this.request('GET', path, { customHeaders })
+    try {
+      const apiWorkflowRuns = await parsedResponse<IAPIWorkflowRuns>(response)
+
+      if (apiWorkflowRuns.workflow_runs.length > 0) {
+        return apiWorkflowRuns.workflow_runs[0]
+      }
+    } catch (err) {
+      log.debug(
+        `Failed fetching workflow runs for ${checkSuiteId} (${owner}/${name})`
       )
     }
     return null
@@ -1265,6 +1344,8 @@ export class API {
       API.emitTokenInvalidated(this.endpoint)
     }
 
+    tryUpdateEndpointVersionFromResponse(this.endpoint, response)
+
     return response
   }
 
@@ -1404,7 +1485,7 @@ export async function createAuthorization(
     'POST',
     'authorizations',
     {
-      scopes: getOAuthScopesForEndpoint(endpoint),
+      scopes: oauthScopes,
       client_id: ClientID,
       client_secret: ClientSecret,
       note: note,
@@ -1416,6 +1497,8 @@ export async function createAuthorization(
       ...optHeader,
     }
   )
+
+  tryUpdateEndpointVersionFromResponse(endpoint, response)
 
   try {
     const result = await parsedResponse<IAPIAuthorization>(response)
@@ -1522,6 +1605,8 @@ export async function fetchMetadata(
     const response = await request(endpoint, null, 'GET', 'meta', undefined, {
       'Content-Type': 'application/json',
     })
+
+    tryUpdateEndpointVersionFromResponse(endpoint, response)
 
     const result = await parsedResponse<IServerMetadata>(response)
     if (!result || result.verifiable_password_authentication === undefined) {
@@ -1632,7 +1717,7 @@ export function getOAuthAuthorizationURL(
   state: string
 ): string {
   const urlBase = getHTMLURL(endpoint)
-  const scopes = getOAuthScopesForEndpoint(endpoint)
+  const scopes = oauthScopes
   const scope = encodeURIComponent(scopes.join(' '))
   return `${urlBase}/login/oauth/authorize?client_id=${ClientID}&scope=${scope}&state=${state}`
 }
@@ -1654,6 +1739,8 @@ export async function requestOAuthToken(
         code: code,
       }
     )
+    tryUpdateEndpointVersionFromResponse(endpoint, response)
+
     const result = await parsedResponse<IAPIAccessToken>(response)
     return result.access_token
   } catch (e) {
@@ -1662,8 +1749,12 @@ export async function requestOAuthToken(
   }
 }
 
-function getOAuthScopesForEndpoint(endpoint: string) {
-  return endpoint === getDotComAPIEndpoint()
-    ? DotComOAuthScopes
-    : EnterpriseOAuthScopes
+function tryUpdateEndpointVersionFromResponse(
+  endpoint: string,
+  response: Response
+) {
+  const gheVersion = response.headers.get('x-github-enterprise-version')
+  if (gheVersion !== null) {
+    updateEndpointVersion(endpoint, gheVersion)
+  }
 }

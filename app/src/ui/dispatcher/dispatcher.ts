@@ -1,4 +1,3 @@
-import { remote } from 'electron'
 import { Disposable, IDisposable } from 'event-kit'
 
 import {
@@ -89,7 +88,12 @@ import { Banner, BannerType } from '../../models/banner'
 
 import { ApplicationTheme, ICustomTheme } from '../lib/application-theme'
 import { installCLI } from '../lib/install-cli'
-import { executeMenuItem } from '../main-process-proxy'
+import {
+  executeMenuItem,
+  moveToApplicationsFolder,
+  isWindowFocused,
+  showOpenDialog,
+} from '../main-process-proxy'
 import {
   CommitStatusStore,
   StatusCallBack,
@@ -781,6 +785,11 @@ export class Dispatcher {
       }
 
       const addedRepositories = await this.addRepositories([path])
+
+      if (addedRepositories.length < 1) {
+        return null
+      }
+
       const addedRepository = addedRepositories[0]
       await this.selectRepository(addedRepository)
 
@@ -837,9 +846,10 @@ export class Dispatcher {
   /** Discard the changes to the given files. */
   public discardChanges(
     repository: Repository,
-    files: ReadonlyArray<WorkingDirectoryFileChange>
+    files: ReadonlyArray<WorkingDirectoryFileChange>,
+    moveToTrash: boolean = true
   ): Promise<void> {
-    return this.appStore._discardChanges(repository, files)
+    return this.appStore._discardChanges(repository, files, moveToTrash)
   }
 
   /** Discard the changes from the given diff selection. */
@@ -1366,8 +1376,9 @@ export class Dispatcher {
     return this.appStore.setStatsOptOut(optOut, userViewedPrompt)
   }
 
+  /** Moves the app to the /Applications folder on macOS. */
   public moveToApplicationsFolder() {
-    remote.app.moveToApplicationsFolder?.()
+    return moveToApplicationsFolder()
   }
 
   /**
@@ -1533,14 +1544,12 @@ export class Dispatcher {
    * Update the location of an existing repository and clear the missing flag.
    */
   public async relocateRepository(repository: Repository): Promise<void> {
-    const window = remote.getCurrentWindow()
-    const { filePaths } = await remote.dialog.showOpenDialog(window, {
+    const path = await showOpenDialog({
       properties: ['openDirectory'],
     })
 
-    if (filePaths.length > 0) {
-      const newPath = filePaths[0]
-      await this.updateRepositoryPath(repository, newPath)
+    if (path !== null) {
+      await this.updateRepositoryPath(repository, path)
     }
   }
 
@@ -1576,6 +1585,11 @@ export class Dispatcher {
     } else {
       this.commitStatusStore.stopBackgroundRefresh()
     }
+  }
+
+  public async initializeAppFocusState(): Promise<void> {
+    const isFocused = await isWindowFocused()
+    this.setAppFocusState(isFocused)
   }
 
   /**
@@ -1687,6 +1701,10 @@ export class Dispatcher {
     // up-to-date before performing the "Clone in Desktop" steps
     await this.appStore._refreshRepository(repository)
 
+    // if the repo has a remote, fetch before switching branches to ensure
+    // the checkout will be successful. This operation could be a no-op.
+    await this.appStore._fetch(repository, FetchType.UserInitiatedTask)
+
     await this.checkoutLocalBranch(repository, branchName)
 
     return repository
@@ -1763,8 +1781,8 @@ export class Dispatcher {
         if (__DARWIN__) {
           // workaround for user reports that the application doesn't receive focus
           // after completing the OAuth signin in the browser
-          const window = remote.getCurrentWindow()
-          if (!window.isFocused()) {
+          const isFocused = await isWindowFocused()
+          if (!isFocused) {
             log.info(
               `refocusing the main window after the OAuth flow is completed`
             )
@@ -1824,6 +1842,16 @@ export class Dispatcher {
    */
   public setConfirmDiscardChangesSetting(value: boolean): Promise<void> {
     return this.appStore._setConfirmDiscardChangesSetting(value)
+  }
+
+  /**
+   * Sets the user's preference so that confirmation to retry discard changes
+   * after failure is not asked
+   */
+  public setConfirmDiscardChangesPermanentlySetting(
+    value: boolean
+  ): Promise<void> {
+    return this.appStore._setConfirmDiscardChangesPermanentlySetting(value)
   }
 
   /**
@@ -2005,6 +2033,12 @@ export class Dispatcher {
           retryAction.commitsToReorder,
           retryAction.beforeCommit,
           retryAction.lastRetainedCommitRef
+        )
+      case RetryActionType.DiscardChanges:
+        return this.discardChanges(
+          retryAction.repository,
+          retryAction.files,
+          false
         )
       default:
         return assertNever(retryAction, `Unknown retry action: ${retryAction}`)
@@ -2683,6 +2717,10 @@ export class Dispatcher {
     this.appStore._setUseWindowsOpenSSH(useWindowsOpenSSH)
   }
 
+  public setNotificationsEnabled(notificationsEnabled: boolean) {
+    this.appStore._setNotificationsEnabled(notificationsEnabled)
+  }
+
   public recordDiffOptionsViewed() {
     return this.statsStore.recordDiffOptionsViewed()
   }
@@ -3170,6 +3208,19 @@ export class Dispatcher {
     }
 
     return this.appStore._setMultiCommitOperationStep(repository, step)
+  }
+
+  /** Set the multi commit operation target branch */
+  public setMultiCommitOperationTargetBranch(
+    repository: Repository,
+    targetBranch: Branch
+  ): void {
+    this.repositoryStateManager.updateMultiCommitOperationState(
+      repository,
+      () => ({
+        targetBranch,
+      })
+    )
   }
 
   /** Set cherry-pick branch created state */
@@ -3823,5 +3874,13 @@ export class Dispatcher {
 
   public recordRerunChecks() {
     this.statsStore.recordRerunChecks()
+  }
+
+  public recordChecksFailedDialogSwitchToPullRequest() {
+    this.statsStore.recordChecksFailedDialogSwitchToPullRequest()
+  }
+
+  public recordChecksFailedDialogRerunChecks() {
+    this.statsStore.recordChecksFailedDialogRerunChecks()
   }
 }
